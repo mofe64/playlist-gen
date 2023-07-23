@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"mofe64/playlistGen/config"
+	"mofe64/playlistGen/routes"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,9 @@ func main() {
 	router.GET("/ping", func(c *gin.Context) {
 		c.String(200, "pong")
 	})
+
+	// auth routes
+	routes.AuthorizationRoute(router)
 
 	// Create Custom Server
 	server := &http.Server{
