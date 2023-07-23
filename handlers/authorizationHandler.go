@@ -2,94 +2,30 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
-	"io/ioutil"
 	"mofe64/playlistGen/config"
 	"mofe64/playlistGen/data/responses"
+	"mofe64/playlistGen/service"
 	"mofe64/playlistGen/util"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
+var spotifyBaseAuthUrl = "https://accounts.spotify.com"
+var spotifyService service.SpotifyService = service.NewSpotifyService()
+
 func GetAccessToken() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		/**
-			Since we are sending formData to the spotify api as application/x-www-form-urlencoded format, we use
-			formData := url.Values{} to create an empty url.Values struct.
-			url.Values is a type provided by the net/url package in Go,It is typically used for query parameters and form values
-			and it is used to represent URL query parameters in a key-value format.
-		**/
-		formData := url.Values{}
-		formData.Set("grant_type", "client_credentials")
 
-		/**
-			formData.Encode() encodes the URL query parameters in the formData url.Values struct into
-			the application/x-www-form-urlencoded format. This encoding is commonly used for encoding form data in HTTP POST requests.
-			The data.Encode() method returns a URL-encoded string representation of the key-value pairs in the url.Values struct.
-			It takes care of properly escaping special characters and converting spaces to the + sign
-			as required in the application/x-www-form-urlencoded format.
-		**/
-		payload := strings.NewReader(formData.Encode())
+		spotifyResponse, err := spotifyService.GetAccessTokenWithClientCredentials()
 
-		clientId := config.EnvSpotifyClientId()
-		clientSecret := config.EnvSpotifyClientSecret()
-		authString := clientId + ":" + clientSecret
-
-		/**
-			[]byte(authString) converts the authString (which is a string containing the client ID and client secret concatenated with a colon)
-			into a byte slice, since Base64 encoding works with byte slices.
-			base64.StdEncoding.EncodeToString() takes the byte slice as input and returns a Base64-encoded string representation of the input data.
-			The resulting encodedAuthString will be a Base64-encoded representation of the client ID and client secret
-			in the format required for the Authorization header in an HTTP request.
-		**/
-		encodedAuthString := base64.StdEncoding.EncodeToString([]byte(authString))
-
-		authHeader := "Basic " + encodedAuthString
-		client := &http.Client{}
-		url := "https://accounts.spotify.com/api/token"
-		req, err := http.NewRequest("POST", url, payload)
 		if err != nil {
-			util.ErrorLog.Println("Error creating request", err)
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Error creating request",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
-				},
-			)
-			return
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Authorization", authHeader)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			util.ErrorLog.Println("Error executing request", err)
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Error executing request",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
-				},
-			)
-			return
-		}
-		defer resp.Body.Close()
-
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			util.ErrorLog.Println("Error decoding response body", err)
 			c.JSON(
 				http.StatusInternalServerError,
 				responses.APIResponse{
@@ -97,47 +33,86 @@ func GetAccessToken() gin.HandlerFunc {
 					Message:   "Something went wrong",
 					Timestamp: time.Now(),
 					Data:      gin.H{"error": err.Error()},
-				},
-			)
-			return
-		}
-		var accessTokenResponse responses.AccessTokenResponse
-		err = json.Unmarshal(body, &accessTokenResponse)
-		if err != nil {
-			util.ErrorLog.Println("Error unmarshalling res body ", err)
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
+					Success:   false,
 				},
 			)
 			return
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			util.InfoLog.Println("Request returned non ok res ", err)
-			c.JSON(
-				resp.StatusCode,
-				responses.APIResponse{
-					Status:    http.StatusBadRequest,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": accessTokenResponse},
-				},
-			)
-			return
+		go func() {
+			applicationContext := util.GetApplicationContextInstance()
+			applicationContext.SetAccessToken(spotifyResponse.AccessToken)
+		}()
+
+		messageValue := "Fail"
+		if spotifyResponse.StatusCode == 200 {
+			messageValue = "Success"
 		}
-		c.JSON(resp.StatusCode, responses.APIResponse{
-			Status:    resp.StatusCode,
-			Message:   "Success",
+
+		c.JSON(spotifyResponse.StatusCode, responses.APIResponse{
+			Status:    spotifyResponse.StatusCode,
+			Message:   messageValue,
 			Timestamp: time.Now(),
 			Data: gin.H{
-				"auth": accessTokenResponse,
+				"auth": spotifyResponse,
 			},
+			Success: spotifyResponse.StatusCode == 200,
 		})
 
 	}
+}
+
+func GetAuthorizationCode() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Prepare the query parameters.
+		params := url.Values{}
+		params.Add("client_id", config.EnvSpotifyClientId())
+		params.Add("response_type", "code")
+		params.Add("redirect_uri", "http://localhost:5000/api/v1/auth/auth_code_callback")
+		params.Add("state", generateRandomString(16))
+		params.Add("scope", "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-top-read user-read-recently-played user-library-modify user-library-read user-read-private")
+		baseUrl := spotifyBaseAuthUrl + "/authorize"
+		redirectURL := baseUrl + "?" + params.Encode()
+		c.Redirect(http.StatusFound, redirectURL)
+	}
+}
+
+func AuthorizationCodeCallBack() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		code := c.Query("code")
+		state := c.Query("state")
+		error := c.Query("error")
+		util.InfoLog.Println("code -> ", code)
+		util.InfoLog.Println("state -> ", state)
+		util.InfoLog.Println("error -> ", error)
+
+		if len(error) != 0 {
+			c.JSON(http.StatusUnauthorized, responses.APIResponse{
+				Status:    http.StatusUnauthorized,
+				Message:   error,
+				Timestamp: time.Now(),
+				Data:      gin.H{},
+				Success:   false,
+			})
+		}
+
+		c.JSON(http.StatusOK, responses.APIResponse{
+			Status:    http.StatusOK,
+			Message:   "success",
+			Timestamp: time.Now(),
+			Data:      gin.H{},
+			Success:   true,
+		})
+	}
+}
+
+func generateRandomString(length int) string {
+	b := make([]byte, length)
+	rand.Read(b)
+	return base64.URLEncoding.EncodeToString(b)[:length]
 }
