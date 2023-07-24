@@ -7,4 +7,6 @@ type AccessTokenResponse struct {
 	ExpiresIn        int16  `json:"expires_in,omitempty"`
 	Error            string `json:"error,omitempty"`
 	ErrorDescription string `json:"error_description,omitempty"`
+	Scope            string `json:"scope,omitempty"`
+	RefreshToken     string `json:"refresh_token,omitempty"`
 }
