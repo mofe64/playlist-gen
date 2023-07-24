@@ -14,15 +14,18 @@ import (
 
 type SpotifyService interface {
 	GetAccessTokenWithClientCredentials() (*responses.AccessTokenResponse, error)
+	GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error)
 }
 
 type spotifyService struct {
 	spotifyBaseAuthUrl string
+	spotifyRedirectUri string
 }
 
-func NewSpotifyService() SpotifyService {
+func NewSpotifyService(redirectUri string) SpotifyService {
 	return &spotifyService{
 		spotifyBaseAuthUrl: "https://accounts.spotify.com",
+		spotifyRedirectUri: redirectUri,
 	}
 }
 
@@ -92,6 +95,49 @@ func (s *spotifyService) GetAccessTokenWithClientCredentials() (*responses.Acces
 
 }
 
-func (s *spotifyService) GetAccessTokenWithAccessToken() {
+func (s *spotifyService) GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error) {
 
+	formData := url.Values{}
+	formData.Set("grant_type", "authorization_code")
+	formData.Set("code", authCode)
+	formData.Set("redirect_uri", s.spotifyRedirectUri)
+
+	payload := strings.NewReader(formData.Encode())
+
+	clientId := config.EnvSpotifyClientId()
+	clientSecret := config.EnvSpotifyClientSecret()
+	authString := clientId + ":" + clientSecret
+
+	encodedAuthString := base64.StdEncoding.EncodeToString([]byte(authString))
+
+	authHeader := "Basic " + encodedAuthString
+	client := &http.Client{}
+	url := s.spotifyBaseAuthUrl + "/api/token"
+	req, err := http.NewRequest("POST", url, payload)
+	if err != nil {
+		util.ErrorLog.Println("Error creating request", err)
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", authHeader)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println("Error executing request", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println("Error decoding response body", err)
+		return nil, err
+	}
+	var accessTokenResponse responses.AccessTokenResponse
+	err = json.Unmarshal(body, &accessTokenResponse)
+	if err != nil {
+		util.ErrorLog.Println("Error unmarshalling res body ", err)
+		return nil, err
+	}
+	accessTokenResponse.StatusCode = resp.StatusCode
+	return &accessTokenResponse, nil
 }
