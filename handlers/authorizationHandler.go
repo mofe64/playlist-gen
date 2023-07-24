@@ -16,7 +16,8 @@ import (
 )
 
 var spotifyBaseAuthUrl = "https://accounts.spotify.com"
-var spotifyService service.SpotifyService = service.NewSpotifyService()
+var spotifyRedirectUri = "http://localhost:5000/api/v1/auth/auth_code_callback"
+var spotifyService service.SpotifyService = service.NewSpotifyService(spotifyRedirectUri)
 
 func GetAccessToken() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -99,14 +100,36 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 				Data:      gin.H{},
 				Success:   false,
 			})
+			return
+		}
+		resp, err := spotifyService.GetAccessTokenWithAuthCode(code)
+
+		if err != nil {
+			c.JSON(
+				http.StatusInternalServerError,
+				responses.APIResponse{
+					Status:    http.StatusInternalServerError,
+					Message:   "Something went wrong",
+					Timestamp: time.Now(),
+					Data:      gin.H{"error": err.Error()},
+					Success:   false,
+				},
+			)
+			return
+		}
+		messageValue := "Fail"
+		if resp.StatusCode == 200 {
+			messageValue = "Success"
 		}
 
 		c.JSON(http.StatusOK, responses.APIResponse{
 			Status:    http.StatusOK,
-			Message:   "success",
+			Message:   messageValue,
 			Timestamp: time.Now(),
-			Data:      gin.H{},
-			Success:   true,
+			Data: gin.H{
+				"auth": resp,
+			},
+			Success: resp.StatusCode == 200,
 		})
 	}
 }
