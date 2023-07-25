@@ -134,6 +134,10 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 	}
 }
 
+func RegisterUser() {}
+
+func LoginUser() {}
+
 func generateRandomString(length int) string {
 	b := make([]byte, length)
 	rand.Read(b)
