@@ -15,6 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func init() {
+	log.Println("Here we go ......")
+}
+
 func main() {
 	router := gin.Default()
 	router.Use(gin.Recovery())
