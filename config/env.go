@@ -33,7 +33,15 @@ func EnvSpotifyClientSecret() string {
 
 func EnvMongoURI() string {
 	loadEnv()
-	return os.Getenv("mongo_uri")
+	activeProfile := EnvProfile()
+	if activeProfile == "test" {
+		return os.Getenv("mongo_uri_test")
+	} else if activeProfile == "production" {
+		return os.Getenv("mongo_uri_prod")
+	} else {
+		return os.Getenv("mongo_uri_dev")
+	}
+
 }
 
 func EnvDatabaseName() string {
