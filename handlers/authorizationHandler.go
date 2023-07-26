@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"mofe64/playlistGen/config"
+	"mofe64/playlistGen/data/models"
 	"mofe64/playlistGen/data/responses"
 	"mofe64/playlistGen/service"
 	"mofe64/playlistGen/util"
@@ -13,11 +14,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var spotifyBaseAuthUrl = "https://accounts.spotify.com"
 var spotifyRedirectUri = "http://localhost:5000/api/v1/auth/auth_code_callback"
 var spotifyService service.SpotifyService = service.NewSpotifyService(spotifyRedirectUri)
+var userCollection = config.GetCollection(config.DATABASE, "users")
+var validate *validator.Validate = validator.New()
 
 func GetAccessToken() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -134,7 +140,88 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 	}
 }
 
-func RegisterUser() {}
+func RegisterUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		var user models.User
+		if err := c.ShouldBindJSON(&user); err != nil {
+			util.ErrorLog.Printf("Error binding Json Obj %v\n", err)
+			c.JSON(
+				http.StatusBadRequest,
+				responses.APIResponse{
+					Status:    http.StatusBadRequest,
+					Message:   "Invalid request",
+					Timestamp: time.Now(),
+					Data:      gin.H{"error": err.Error()},
+					Success:   false,
+				},
+			)
+			return
+		}
+
+		if validationErr := validate.Struct(&user); validationErr != nil {
+			util.ErrorLog.Println("validation error", validationErr.Error())
+			c.JSON(http.StatusBadRequest,
+				responses.APIResponse{
+					Status:    http.StatusBadRequest,
+					Message:   "validation error",
+					Timestamp: time.Now(),
+					Data:      gin.H{"data": validationErr.Error()},
+					Success:   false,
+				})
+			return
+		}
+
+		var password = user.Password
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			util.ErrorLog.Println("password hash error", err.Error())
+			c.JSON(
+				http.StatusInternalServerError,
+				responses.APIResponse{
+					Status:    http.StatusInternalServerError,
+					Message:   "Failed to hash password",
+					Timestamp: time.Now(),
+					Data:      gin.H{"error": err.Error()},
+					Success:   false,
+				},
+			)
+			return
+		}
+
+		newUser := models.User{
+			Id:       primitive.NewObjectID(),
+			Username: user.Username,
+			Email:    user.Email,
+			Password: string(hashedPassword),
+		}
+
+		result, err := userCollection.InsertOne(ctx, newUser)
+		if err != nil {
+			util.ErrorLog.Println("DB Insertion err", err.Error())
+			c.JSON(
+				http.StatusInternalServerError,
+				responses.APIResponse{
+					Status:    http.StatusInternalServerError,
+					Message:   "DB Insertion err",
+					Timestamp: time.Now(),
+					Data:      gin.H{"error": err.Error()},
+					Success:   false,
+				},
+			)
+			return
+		}
+		c.JSON(http.StatusCreated, responses.APIResponse{
+			Status:  http.StatusCreated,
+			Message: "success",
+			Data:    gin.H{"data": result},
+		})
+
+	}
+
+}
 
 func LoginUser() {}
 
