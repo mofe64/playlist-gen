@@ -303,6 +303,11 @@ func LoginUser() gin.HandlerFunc {
 			return
 		}
 
+		// sending the token as a cookie,
+		// time param is seconds, so 3600 is 1 hour
+		// c.SetSameSite(http.SameSiteLaxMode)
+		// c.SetCookie("Authorization", token, 3600, "", "", false, true)
+
 		c.JSON(http.StatusOK, responses.APIResponse{
 			Status:    http.StatusOK,
 			Message:   "Success",
