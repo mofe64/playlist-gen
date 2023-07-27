@@ -27,7 +27,7 @@ func (j *jwtService) GenerateToken(username string) (string, error) {
 		"sub": username,
 		"exp": time.Now().Add(time.Hour * 24),
 	})
-	tokenString, err := token.SignedString(j.secret)
+	tokenString, err := token.SignedString([]byte(j.secret))
 	if err != nil {
 		return "", err
 	}
