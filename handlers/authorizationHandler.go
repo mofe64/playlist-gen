@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"mofe64/playlistGen/config"
 	"mofe64/playlistGen/data/models"
+	"mofe64/playlistGen/data/requests"
 	"mofe64/playlistGen/data/responses"
 	"mofe64/playlistGen/service"
 	"mofe64/playlistGen/util"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -24,6 +26,7 @@ var spotifyRedirectUri = "http://localhost:5000/api/v1/auth/auth_code_callback"
 var spotifyService service.SpotifyService = service.NewSpotifyService(spotifyRedirectUri)
 var userCollection = config.GetCollection(config.DATABASE, "users")
 var validate *validator.Validate = validator.New()
+var jwtService = service.NewJWTService()
 
 func GetAccessToken() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -33,13 +36,14 @@ func GetAccessToken() gin.HandlerFunc {
 		spotifyResponse, err := spotifyService.GetAccessTokenWithClientCredentials()
 
 		if err != nil {
+			util.ErrorLog.Println("Spotify get access token with client cred error ", err.Error())
 			c.JSON(
 				http.StatusInternalServerError,
 				responses.APIResponse{
 					Status:    http.StatusInternalServerError,
 					Message:   "Something went wrong",
 					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
+					Data:      gin.H{"error": "Internal Error, please try again"},
 					Success:   false,
 				},
 			)
@@ -111,13 +115,14 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		resp, err := spotifyService.GetAccessTokenWithAuthCode(code)
 
 		if err != nil {
+			util.ErrorLog.Println("Spotify get auth code error", err.Error())
 			c.JSON(
 				http.StatusInternalServerError,
 				responses.APIResponse{
 					Status:    http.StatusInternalServerError,
 					Message:   "Something went wrong",
 					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
+					Data:      gin.H{"error": "Internal Error, please try again"},
 					Success:   false,
 				},
 			)
@@ -182,9 +187,9 @@ func RegisterUser() gin.HandlerFunc {
 				http.StatusInternalServerError,
 				responses.APIResponse{
 					Status:    http.StatusInternalServerError,
-					Message:   "Failed to hash password",
+					Message:   "Something went wrong",
 					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
+					Data:      gin.H{"error": "Internal Error, please try again"},
 					Success:   false,
 				},
 			)
@@ -205,9 +210,9 @@ func RegisterUser() gin.HandlerFunc {
 				http.StatusInternalServerError,
 				responses.APIResponse{
 					Status:    http.StatusInternalServerError,
-					Message:   "DB Insertion err",
+					Message:   "Something went wrong",
 					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
+					Data:      gin.H{"error": "Internal Error, please try again"},
 					Success:   false,
 				},
 			)
@@ -223,7 +228,90 @@ func RegisterUser() gin.HandlerFunc {
 
 }
 
-func LoginUser() {}
+func LoginUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		var request requests.LoginRequest
+		defer cancel()
+		if err := c.BindJSON(&request); err != nil {
+			util.ErrorLog.Printf("Error binding Json Obj %v\n", err)
+			c.JSON(http.StatusBadRequest, responses.APIResponse{
+				Status:    http.StatusBadRequest,
+				Timestamp: time.Now(),
+				Message:   "Error",
+				Data:      gin.H{"error": err.Error()},
+				Success:   false,
+			})
+			return
+		}
+		//use the validator library to validate required fields
+		if validationErr := validate.Struct(&request); validationErr != nil {
+			util.ErrorLog.Println("validation error", validationErr.Error())
+			c.JSON(http.StatusBadRequest, responses.APIResponse{
+				Status:    http.StatusBadRequest,
+				Message:   "validation error",
+				Timestamp: time.Now(),
+				Data:      gin.H{"error": validationErr.Error()},
+				Success:   false,
+			})
+			return
+		}
+
+		// find user with provided id and unmarshal doc into user obj or return err if any
+		var user models.User
+		err := userCollection.FindOne(ctx, bson.M{"username": request.Username}).Decode(&user)
+		if err != nil {
+			c.JSON(http.StatusBadRequest,
+				responses.APIResponse{
+					Status:    http.StatusBadRequest,
+					Message:   "Not found",
+					Timestamp: time.Now(),
+					Data:      gin.H{"data": err.Error()},
+					Success:   false,
+				},
+			)
+			return
+		}
+
+		var userPassword = user.Password
+		err = bcrypt.CompareHashAndPassword([]byte(userPassword), []byte(request.Password))
+		if err != nil {
+			c.JSON(http.StatusBadRequest,
+				responses.APIResponse{
+					Status:    http.StatusBadRequest,
+					Timestamp: time.Now(),
+					Message:   "error",
+					Data:      gin.H{"data": err.Error()},
+					Success:   false,
+				})
+
+			return
+		}
+		token, err := jwtService.GenerateToken(user.Username)
+		if err != nil {
+			util.ErrorLog.Println("Token Gen error", err.Error())
+			c.JSON(
+				http.StatusInternalServerError,
+				responses.APIResponse{
+					Status:    http.StatusInternalServerError,
+					Message:   "Something went wrong",
+					Timestamp: time.Now(),
+					Data:      gin.H{"error": "Internal Error, please try again"},
+					Success:   false,
+				},
+			)
+			return
+		}
+
+		c.JSON(http.StatusOK, responses.APIResponse{
+			Status:    http.StatusOK,
+			Message:   "Success",
+			Timestamp: time.Now(),
+			Data:      gin.H{"token": token},
+			Success:   true,
+		})
+	}
+}
 
 func generateRandomString(length int) string {
 	b := make([]byte, length)
