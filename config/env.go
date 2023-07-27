@@ -57,3 +57,8 @@ func EnvProfile() string {
 	loadEnv()
 	return os.Getenv("profile")
 }
+
+func JWTSecret() string {
+	loadEnv()
+	return os.Getenv("jwt_secret")
+}
