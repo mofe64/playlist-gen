@@ -6,4 +6,5 @@ type User struct {
 	Email       string `json:"email"`
 	Country     string `json:"country"`
 	SpotifyPlan string `json:"spotify_plan"`
+	Auth        Token  `json:"auth"`
 }
