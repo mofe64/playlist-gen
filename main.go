@@ -32,6 +32,8 @@ func main() {
 
 	// auth routes
 	routes.AuthorizationRoute(router)
+	// user routes
+	routes.UserRoute(router)
 
 	// Create Custom Server
 	server := &http.Server{
