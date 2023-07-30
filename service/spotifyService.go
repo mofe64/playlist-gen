@@ -15,17 +15,20 @@ import (
 type SpotifyService interface {
 	GetAccessTokenWithClientCredentials() (*responses.AccessTokenResponse, error)
 	GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error)
+	GetUserProfile(accessToken string) (*responses.SpotifyUserProfile, error)
 }
 
 type spotifyService struct {
 	spotifyBaseAuthUrl string
 	spotifyRedirectUri string
+	spotifyBaseWebApi  string
 }
 
 func NewSpotifyService(redirectUri string) SpotifyService {
 	return &spotifyService{
 		spotifyBaseAuthUrl: "https://accounts.spotify.com",
 		spotifyRedirectUri: redirectUri,
+		spotifyBaseWebApi:  "https://api.spotify.com/v1",
 	}
 }
 
@@ -92,6 +95,38 @@ func (s *spotifyService) GetAccessTokenWithClientCredentials() (*responses.Acces
 	}
 	accessTokenResponse.StatusCode = resp.StatusCode
 	return &accessTokenResponse, nil
+
+}
+
+func (s *spotifyService) GetUserProfile(accesstoken string) (*responses.SpotifyUserProfile, error) {
+	url := s.spotifyBaseWebApi + "/me"
+	authHeader := "Bearer " + accesstoken
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		util.ErrorLog.Println("Error creating request", err)
+		return nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println("Error executing request", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println("Error decoding response body", err)
+		return nil, err
+	}
+	var userProfile responses.SpotifyUserProfile
+	err = json.Unmarshal(body, &userProfile)
+	if err != nil {
+		util.ErrorLog.Println("Error unmarshalling res body ", err)
+		return nil, err
+	}
+
+	return &userProfile, nil
 
 }
 
