@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"mofe64/playlistGen/config"
 	"mofe64/playlistGen/data/models"
-	"mofe64/playlistGen/data/requests"
 	"mofe64/playlistGen/data/responses"
 	"mofe64/playlistGen/service"
 	"mofe64/playlistGen/util"
@@ -17,8 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var spotifyBaseAuthUrl = "https://accounts.spotify.com"
@@ -26,7 +23,7 @@ var spotifyRedirectUri = "http://localhost:5000/api/v1/auth/auth_code_callback"
 var spotifyService service.SpotifyService = service.NewSpotifyService(spotifyRedirectUri)
 var userCollection = config.GetCollection(config.DATABASE, "users")
 var validate *validator.Validate = validator.New()
-var jwtService = service.NewJWTService()
+var redis = config.RedisClient
 
 func GetAccessToken() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -77,30 +74,38 @@ func GetAuthorizationCode() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-
 		// Prepare the query parameters.
 		params := url.Values{}
 		params.Add("client_id", config.EnvSpotifyClientId())
 		params.Add("response_type", "code")
 		params.Add("redirect_uri", "http://localhost:5000/api/v1/auth/auth_code_callback")
 		params.Add("state", generateRandomString(16))
-		params.Add("scope", "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-top-read user-read-recently-played user-library-modify user-library-read user-read-private")
+		params.Add("scope", "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-top-read user-read-recently-played user-library-modify user-library-read user-read-private user-read-email")
 		baseUrl := spotifyBaseAuthUrl + "/authorize"
 		redirectURL := baseUrl + "?" + params.Encode()
-		c.Redirect(http.StatusFound, redirectURL)
+		// c.Redirect(http.StatusFound, redirectURL)
+		c.JSON(http.StatusOK, responses.APIResponse{
+			Status:    http.StatusOK,
+			Message:   "Success",
+			Timestamp: time.Now(),
+			Data: gin.H{
+				"url": redirectURL,
+			},
+			Success: true,
+		})
 	}
 }
 
 func AuthorizationCodeCallBack() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		code := c.Query("code")
 		state := c.Query("state")
 		error := c.Query("error")
 		util.InfoLog.Println("code -> ", code)
 		util.InfoLog.Println("state -> ", state)
-		util.InfoLog.Println("error -> ", error)
+		util.ErrorLog.Println("error -> ", error)
 
 		if len(error) != 0 {
 			c.JSON(http.StatusUnauthorized, responses.APIResponse{
@@ -128,192 +133,62 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			)
 			return
 		}
+
+		userProfile, err := spotifyService.GetUserProfile(resp.AccessToken)
+		util.InfoLog.Println("user profile ", userProfile)
+		// check if user exists in db if he does not save
+		var user models.User
+		retrieveError := userCollection.FindOne(ctx, bson.M{"id": userProfile.Id}).Decode(&user)
+		if retrieveError != nil {
+			util.InfoLog.Println("retrieve error", retrieveError.Error())
+			newUser := models.User{
+				Id:          userProfile.Id,
+				Username:    userProfile.DisplayName,
+				Country:     userProfile.Country,
+				Email:       userProfile.Email,
+				SpotifyPlan: userProfile.Product,
+			}
+			_, err := userCollection.InsertOne(ctx, newUser)
+			if err != nil {
+				util.ErrorLog.Println("DB Insertion err", err.Error())
+				c.JSON(
+					http.StatusInternalServerError,
+					responses.APIResponse{
+						Status:    http.StatusInternalServerError,
+						Message:   "Something went wrong",
+						Timestamp: time.Now(),
+						Data:      gin.H{"error": "Internal Error, please try again"},
+						Success:   false,
+					},
+				)
+				return
+			}
+		}
 		messageValue := "Fail"
 		if resp.StatusCode == 200 {
 			messageValue = "Success"
 		}
+
+		var userSpotifyTokenDetails = models.Token{
+			AccessToken:  resp.AccessToken,
+			TokenType:    resp.TokenType,
+			Scope:        resp.Scope,
+			RefreshToken: resp.RefreshToken,
+		}
+
+		redis.Set(ctx, user.Id, userSpotifyTokenDetails, 0)
 
 		c.JSON(http.StatusOK, responses.APIResponse{
 			Status:    http.StatusOK,
 			Message:   messageValue,
 			Timestamp: time.Now(),
 			Data: gin.H{
-				"auth": resp,
+				"access_token": resp.AccessToken,
+				"token_type":   resp.TokenType,
+				"expires_in":   resp.ExpiresIn,
+				"userId":       user.Id,
 			},
 			Success: resp.StatusCode == 200,
-		})
-	}
-}
-
-func RegisterUser() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		var user models.User
-		if err := c.ShouldBindJSON(&user); err != nil {
-			util.ErrorLog.Printf("Error binding Json Obj %v\n", err)
-			c.JSON(
-				http.StatusBadRequest,
-				responses.APIResponse{
-					Status:    http.StatusBadRequest,
-					Message:   "Invalid request",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": err.Error()},
-					Success:   false,
-				},
-			)
-			return
-		}
-
-		if validationErr := validate.Struct(&user); validationErr != nil {
-			util.ErrorLog.Println("validation error", validationErr.Error())
-			c.JSON(http.StatusBadRequest,
-				responses.APIResponse{
-					Status:    http.StatusBadRequest,
-					Message:   "validation error",
-					Timestamp: time.Now(),
-					Data:      gin.H{"data": validationErr.Error()},
-					Success:   false,
-				})
-			return
-		}
-
-		var password = user.Password
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		if err != nil {
-			util.ErrorLog.Println("password hash error", err.Error())
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": "Internal Error, please try again"},
-					Success:   false,
-				},
-			)
-			return
-		}
-
-		newUser := models.User{
-			Id:       primitive.NewObjectID(),
-			Username: user.Username,
-			Email:    user.Email,
-			Password: string(hashedPassword),
-		}
-
-		result, err := userCollection.InsertOne(ctx, newUser)
-		if err != nil {
-			util.ErrorLog.Println("DB Insertion err", err.Error())
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": "Internal Error, please try again"},
-					Success:   false,
-				},
-			)
-			return
-		}
-		c.JSON(http.StatusCreated, responses.APIResponse{
-			Status:  http.StatusCreated,
-			Message: "success",
-			Data:    gin.H{"data": result},
-		})
-
-	}
-
-}
-
-func LoginUser() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		var request requests.LoginRequest
-		defer cancel()
-		if err := c.BindJSON(&request); err != nil {
-			util.ErrorLog.Printf("Error binding Json Obj %v\n", err)
-			c.JSON(http.StatusBadRequest, responses.APIResponse{
-				Status:    http.StatusBadRequest,
-				Timestamp: time.Now(),
-				Message:   "Error",
-				Data:      gin.H{"error": err.Error()},
-				Success:   false,
-			})
-			return
-		}
-		//use the validator library to validate required fields
-		if validationErr := validate.Struct(&request); validationErr != nil {
-			util.ErrorLog.Println("validation error", validationErr.Error())
-			c.JSON(http.StatusBadRequest, responses.APIResponse{
-				Status:    http.StatusBadRequest,
-				Message:   "validation error",
-				Timestamp: time.Now(),
-				Data:      gin.H{"error": validationErr.Error()},
-				Success:   false,
-			})
-			return
-		}
-
-		// find user with provided id and unmarshal doc into user obj or return err if any
-		var user models.User
-		err := userCollection.FindOne(ctx, bson.M{"username": request.Username}).Decode(&user)
-		if err != nil {
-			c.JSON(http.StatusBadRequest,
-				responses.APIResponse{
-					Status:    http.StatusBadRequest,
-					Message:   "Not found",
-					Timestamp: time.Now(),
-					Data:      gin.H{"data": err.Error()},
-					Success:   false,
-				},
-			)
-			return
-		}
-
-		var userPassword = user.Password
-		err = bcrypt.CompareHashAndPassword([]byte(userPassword), []byte(request.Password))
-		if err != nil {
-			c.JSON(http.StatusBadRequest,
-				responses.APIResponse{
-					Status:    http.StatusBadRequest,
-					Timestamp: time.Now(),
-					Message:   "error",
-					Data:      gin.H{"data": err.Error()},
-					Success:   false,
-				})
-
-			return
-		}
-		token, err := jwtService.GenerateToken(user.Username)
-		if err != nil {
-			util.ErrorLog.Println("Token Gen error", err.Error())
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": "Internal Error, please try again"},
-					Success:   false,
-				},
-			)
-			return
-		}
-
-		// sending the token as a cookie,
-		// time param is seconds, so 3600 is 1 hour
-		// c.SetSameSite(http.SameSiteLaxMode)
-		// c.SetCookie("Authorization", token, 3600, "", "", false, true)
-
-		c.JSON(http.StatusOK, responses.APIResponse{
-			Status:    http.StatusOK,
-			Message:   "Success",
-			Timestamp: time.Now(),
-			Data:      gin.H{"token": token},
-			Success:   true,
 		})
 	}
 }
