@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"mofe64/playlistGen/config"
 	"mofe64/playlistGen/data/models"
 	"mofe64/playlistGen/data/responses"
@@ -97,16 +98,23 @@ func GetAuthorizationCode() gin.HandlerFunc {
 }
 
 func AuthorizationCodeCallBack() gin.HandlerFunc {
+	tag := "AUTHORIZATION_CODE_CALLBACK"
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		// extract and log our query parameters
 		code := c.Query("code")
 		state := c.Query("state")
 		error := c.Query("error")
-		util.InfoLog.Println("code -> ", code)
-		util.InfoLog.Println("state -> ", state)
-		util.ErrorLog.Println("error -> ", error)
+		util.InfoLog.Println(tag+": code -> ", code)
+		util.InfoLog.Println(tag+": state -> ", state)
+		util.ErrorLog.Println(tag+": error -> ", error)
 
+		/**
+			If our callback is triggered with an error query param,
+			this means our spotify authentcation was not successful.
+			We return an unauthorized response
+		**/
 		if len(error) != 0 {
 			c.JSON(http.StatusUnauthorized, responses.APIResponse{
 				Status:    http.StatusUnauthorized,
@@ -117,10 +125,17 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			})
 			return
 		}
+
+		/**
+			Getting to this point means our spotify authentication was successful
+			and we recieved an authorization code. We will exchange this auth code
+			for an acceess and refesh token from spotify
+		**/
 		resp, err := spotifyService.GetAccessTokenWithAuthCode(code)
 
+		// return status 500 and log error, if access token operation returns an error
 		if err != nil {
-			util.ErrorLog.Println("Spotify get auth code error", err.Error())
+			util.ErrorLog.Println(tag+": Spotify get auth code error", err.Error())
 			c.JSON(
 				http.StatusInternalServerError,
 				responses.APIResponse{
@@ -134,23 +149,51 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			return
 		}
 
+		/**
+			Retrive the authenticated user's profile from spotify
+		**/
 		userProfile, err := spotifyService.GetUserProfile(resp.AccessToken)
-		util.InfoLog.Println("user profile ", userProfile)
-		// check if user exists in db if he does not save
+
+		util.InfoLog.Println(tag+": user profile ", userProfile)
+
 		var user models.User
+
+		/**
+			Create a new Token struct called spotify auth which will hold our
+			spotify authentication details
+		**/
+		var spotifyAuth = models.Token{
+			AccessToken:  resp.AccessToken,
+			TokenType:    resp.TokenType,
+			Scope:        resp.Scope,
+			RefreshToken: resp.RefreshToken,
+			ExpiresIn:    resp.ExpiresIn,
+			IssuedAt:     time.Now(),
+		}
+
+		/**
+			Check if the retirieved profile exists in our database
+			If the user does not exist, create a new entry in database for user
+			If the user exists, update his authentication details to reflect newly
+			obtained access and refresh tokens
+		**/
 		retrieveError := userCollection.FindOne(ctx, bson.M{"id": userProfile.Id}).Decode(&user)
+		// if user does not exist
 		if retrieveError != nil {
-			util.InfoLog.Println("retrieve error", retrieveError.Error())
+			util.InfoLog.Println(tag+": retrieve error", retrieveError.Error())
+			// create new user entry in db based off retrived spotify profile and
+			// authentication details
 			newUser := models.User{
 				Id:          userProfile.Id,
 				Username:    userProfile.DisplayName,
 				Country:     userProfile.Country,
 				Email:       userProfile.Email,
 				SpotifyPlan: userProfile.Product,
+				Auth:        spotifyAuth,
 			}
 			_, err := userCollection.InsertOne(ctx, newUser)
 			if err != nil {
-				util.ErrorLog.Println("DB Insertion err", err.Error())
+				util.ErrorLog.Println(tag+": DB Insertion err", err.Error())
 				c.JSON(
 					http.StatusInternalServerError,
 					responses.APIResponse{
@@ -163,21 +206,62 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 				)
 				return
 			}
+		} else {
+			// if user exists
+			// update user's auth details to the newly generated auth details
+			user.Auth = spotifyAuth
+			filter := bson.M{"id": user.Id}
+			update := bson.M{"$set": user}
+			_, err := userCollection.UpdateOne(ctx, filter, update)
+			if err != nil {
+				util.ErrorLog.Println(tag+": DB Update err", err.Error())
+				c.JSON(
+					http.StatusInternalServerError,
+					responses.APIResponse{
+						Status:    http.StatusInternalServerError,
+						Message:   "Something went wrong",
+						Timestamp: time.Now(),
+						Data:      gin.H{"error": "Internal Error, please try again"},
+						Success:   false,
+					},
+				)
+				return
+			}
+
 		}
 		messageValue := "Fail"
 		if resp.StatusCode == 200 {
 			messageValue = "Success"
 		}
 
-		var userSpotifyTokenDetails = models.Token{
-			AccessToken:  resp.AccessToken,
-			TokenType:    resp.TokenType,
-			Scope:        resp.Scope,
-			RefreshToken: resp.RefreshToken,
+		/**
+			To avoid having to go to the db everytime to retrieve user's auth details,
+			we are going to store the auth details in redis, mapped to the user's id
+			This way we can more efficiently retrieve the auth details and use it.
+			To do this, we first convert our token struct (spotifyAuth) to json,
+			we will then stringify the json value and store it as a string in redis.
+			The auth details will be mapped to the user id for easy retrieval
+		**/
+		jsonValue, err := json.Marshal(spotifyAuth)
+		// if there was an error converting auth details to json format return 500 error res
+		if err != nil {
+			util.ErrorLog.Println(tag+": Could not convert spotify token details to json", err.Error())
+			c.JSON(
+				http.StatusInternalServerError,
+				responses.APIResponse{
+					Status:    http.StatusInternalServerError,
+					Message:   "Something went wrong",
+					Timestamp: time.Now(),
+					Data:      gin.H{"error": "Internal Error, please try again"},
+					Success:   false,
+				},
+			)
+			return
 		}
+		// store spotify auth details in redis kv
+		redis.Set(ctx, user.Id, string(jsonValue), 0)
 
-		redis.Set(ctx, user.Id, userSpotifyTokenDetails, 0)
-
+		// return success response to user
 		c.JSON(http.StatusOK, responses.APIResponse{
 			Status:    http.StatusOK,
 			Message:   messageValue,
