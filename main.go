@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"mofe64/playlistGen/config"
+	"mofe64/playlistGen/middleware"
 	"mofe64/playlistGen/routes"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ func init() {
 
 func main() {
 	router := gin.Default()
+	router.Use(middleware.CustomLogger())
 	router.Use(gin.Recovery())
 
 	// Set up ping route
