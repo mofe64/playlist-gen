@@ -3,7 +3,8 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"mofe64/playlistGen/config"
 	"mofe64/playlistGen/data/responses"
 	"mofe64/playlistGen/util"
@@ -16,6 +17,7 @@ type SpotifyService interface {
 	GetAccessTokenWithClientCredentials() (*responses.AccessTokenResponse, error)
 	GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error)
 	GetUserProfile(accessToken string) (*responses.SpotifyUserProfile, error)
+	GetUserTopTracks(accessToken string) (*responses.TopItemsResponse, error)
 }
 
 type spotifyService struct {
@@ -81,7 +83,7 @@ func (s *spotifyService) GetAccessTokenWithClientCredentials() (*responses.Acces
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		util.ErrorLog.Println("Error decoding response body", err)
 		return nil, err
@@ -114,7 +116,7 @@ func (s *spotifyService) GetUserProfile(accesstoken string) (*responses.SpotifyU
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		util.ErrorLog.Println("Error decoding response body", err)
 		return nil, err
@@ -128,6 +130,44 @@ func (s *spotifyService) GetUserProfile(accesstoken string) (*responses.SpotifyU
 
 	return &userProfile, nil
 
+}
+
+func (s *spotifyService) GetUserTopTracks(accessToken string) (*responses.TopItemsResponse, error) {
+	var tag = "SPOTIFY_SERVICE_GET_USER_TOP_TRACKS"
+	requestBaseUrl := s.spotifyBaseWebApi + "/me/top/tracks"
+	queryParams := url.Values{}
+	queryParams.Set("time_range", "short_term")
+	queryParams.Set("limit", "50")
+	fullUrl := fmt.Sprintf("%s?%s", requestBaseUrl, queryParams.Encode())
+
+	authHeader := "Bearer " + accessToken
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", fullUrl, nil)
+
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error creating request", err)
+		return nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error executing request", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error decoding response body", err)
+		return nil, err
+	}
+	var topItems responses.TopItemsResponse
+	err = json.Unmarshal(body, &topItems)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+		return nil, err
+	}
+
+	return &topItems, nil
 }
 
 func (s *spotifyService) GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error) {
@@ -162,7 +202,7 @@ func (s *spotifyService) GetAccessTokenWithAuthCode(authCode string) (*responses
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		util.ErrorLog.Println("Error decoding response body", err)
 		return nil, err
