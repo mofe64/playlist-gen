@@ -159,10 +159,10 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		var user models.User
 
 		/**
-			Create a new Token struct called spotify auth which will hold our
+			Create a new Session struct called spotify auth which will hold our
 			spotify authentication details
 		**/
-		var spotifyAuth = models.Token{
+		var spotifyAuth = models.Session{
 			AccessToken:  resp.AccessToken,
 			TokenType:    resp.TokenType,
 			Scope:        resp.Scope,
@@ -174,7 +174,7 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		/**
 			Check if the retirieved profile exists in our database
 			If the user does not exist, create a new entry in database for user
-			If the user exists, update his authentication details to reflect newly
+			If the user exists, update user's authentication field to reflect newly
 			obtained access and refresh tokens
 		**/
 		retrieveError := userCollection.FindOne(ctx, bson.M{"id": userProfile.Id}).Decode(&user)
@@ -206,6 +206,7 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 				)
 				return
 			}
+			user = newUser
 		} else {
 			// if user exists
 			// update user's auth details to the newly generated auth details
@@ -238,7 +239,7 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			To avoid having to go to the db everytime to retrieve user's auth details,
 			we are going to store the auth details in redis, mapped to the user's id
 			This way we can more efficiently retrieve the auth details and use it.
-			To do this, we first convert our token struct (spotifyAuth) to json,
+			To do this, we first convert our session struct (spotifyAuth) to json,
 			we will then stringify the json value and store it as a string in redis.
 			The auth details will be mapped to the user id for easy retrieval
 		**/
@@ -259,6 +260,8 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			return
 		}
 		// store spotify auth details in redis kv
+		// Todo handle siuations where redis is unavailable
+		util.InfoLog.Println(tag + ": about to set to redis key --> " + user.Id)
 		redis.Set(ctx, user.Id, string(jsonValue), 0)
 
 		// return success response to user
