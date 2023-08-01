@@ -18,18 +18,6 @@ func RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		const bearerSchema = "Bearer "
-		authHeader := c.GetHeader("Authorization")
-		if len(authHeader) <= 0 {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, responses.APIResponse{
-				Status:    http.StatusUnauthorized,
-				Message:   "Authorization Header missing ...",
-				Timestamp: time.Now(),
-				Data:      gin.H{},
-				Success:   false,
-			})
-			return
-		}
 		userId := c.Param("userId")
 		if len(userId) == 0 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, responses.APIResponse{
