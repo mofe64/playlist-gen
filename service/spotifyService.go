@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mofe64/playlistGen/config"
@@ -18,6 +19,7 @@ type SpotifyService interface {
 	GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error)
 	GetUserProfile(accessToken string) (*responses.SpotifyUserProfile, error)
 	GetUserTopTracks(accessToken string) (*responses.TopItemsResponse, error)
+	GetTracksAudioFeatures(trackIds []string, accessToken string) (*responses.TracksAudioFeatures, error)
 }
 
 type spotifyService struct {
@@ -168,6 +170,50 @@ func (s *spotifyService) GetUserTopTracks(accessToken string) (*responses.TopIte
 	}
 
 	return &topItems, nil
+}
+
+func (s *spotifyService) GetTracksAudioFeatures(trackIds []string, accessToken string) (*responses.TracksAudioFeatures, error) {
+	var tag = "SPOTIFY_SERVICE_GET_TRACK_AUDIO_FEATURES"
+	if len(trackIds) > 100 {
+		util.ErrorLog.Println(tag + ": track ids cannot be more than 100")
+		return nil, errors.New("track ids cannot be more than 100 in length")
+	}
+	requestUrl := s.spotifyBaseWebApi + "/audio-features"
+	commaSeperatedIdString := strings.Join(trackIds, ",")
+	queryParams := url.Values{}
+	queryParams.Set("ids", commaSeperatedIdString)
+	fullUrl := fmt.Sprintf("%s?%s", requestUrl, queryParams.Encode())
+
+	authHeader := "Bearer " + accessToken
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", fullUrl, nil)
+
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error creating request", err)
+		return nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error executing request", err)
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error decoding response body", err)
+		return nil, err
+	}
+
+	var features responses.TracksAudioFeatures
+	err = json.Unmarshal(body, &features)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+		return nil, err
+	}
+
+	return &features, nil
 }
 
 func (s *spotifyService) GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error) {
