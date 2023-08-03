@@ -13,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+const CUTOFF = 50
+
 func CreatePlaylist() gin.HandlerFunc {
 	tag := "CREATE_PLAYLIST_HANDLER"
 	return func(c *gin.Context) {
@@ -73,13 +75,23 @@ func CreatePlaylist() gin.HandlerFunc {
 			)
 			return
 		}
+		var tracksToAnalyze []string = []string{}
+		for index, track := range userTopTracks.Items {
+			if index < CUTOFF-1 {
+				tracksToAnalyze = append(tracksToAnalyze, track.Id)
+			} else {
+				break
+			}
+		}
 
+		features, err := spotifyService.GetTracksAudioFeatures(tracksToAnalyze, sessionDetails.AccessToken)
 		c.JSON(http.StatusOK, responses.APIResponse{
 			Status:    http.StatusOK,
 			Message:   "Success",
 			Timestamp: time.Now(),
 			Data: gin.H{
 				"topTracks": userTopTracks,
+				"features":  features,
 			},
 			Success: true,
 		})
