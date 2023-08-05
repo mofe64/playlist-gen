@@ -12,6 +12,6 @@ type Features struct {
 	Id               string  `json:"id"`
 	Instrumentalness float32 `json:"instrumentalness"`
 	Liveness         float32 `json:"liveness"`
-	Tempo            float64 `json:"tempo"`
+	Tempo            float32 `json:"tempo"`
 	Valence          float32 `json:"valence"`
 }
