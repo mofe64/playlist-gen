@@ -1,16 +1,19 @@
 package service
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mofe64/playlistGen/config"
+	"mofe64/playlistGen/data/models"
 	"mofe64/playlistGen/data/responses"
 	"mofe64/playlistGen/util"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -18,8 +21,11 @@ type SpotifyService interface {
 	GetAccessTokenWithClientCredentials() (*responses.AccessTokenResponse, error)
 	GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error)
 	GetUserProfile(accessToken string) (*responses.SpotifyUserProfile, error)
-	GetUserTopTracks(accessToken string) (*responses.TopItemsResponse, error)
+	GetUserTopItems(accessToken string, entityType string) (*responses.TopItemsResponse, error)
 	GetTracksAudioFeatures(trackIds []string, accessToken string) (*responses.TracksAudioFeatures, error)
+	GetRecommendations(accessToken string, config models.RecommendationProfile) (*responses.RecommendationsResponse, error)
+	CreatePlaylist(accessToken string, userId string, name string, desc string) (*models.Playlist, error)
+	AddTracksToPlaylist(accessToken string, playlistId string, trackUris []string) (string, error)
 }
 
 type spotifyService struct {
@@ -134,9 +140,103 @@ func (s *spotifyService) GetUserProfile(accesstoken string) (*responses.SpotifyU
 
 }
 
-func (s *spotifyService) GetUserTopTracks(accessToken string) (*responses.TopItemsResponse, error) {
-	var tag = "SPOTIFY_SERVICE_GET_USER_TOP_TRACKS"
-	requestBaseUrl := s.spotifyBaseWebApi + "/me/top/tracks"
+func (s *spotifyService) AddTracksToPlaylist(accessToken string, playlistId string, trackUris []string) (string, error) {
+	var tag = "SPOTIFY_SERVICE_ADD_TRACKS_TO_pLAYLIST"
+	reqUrl := s.spotifyBaseWebApi + "/playlists/" + playlistId + "/tracks"
+	authHeader := "Bearer " + accessToken
+	util.InfoLog.Println(tag+": uris are --> ", trackUris)
+	payload := map[string]interface{}{
+		"uris":     trackUris,
+		"position": 0,
+	}
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error marshalling req body  ", err)
+		return "", err
+	}
+	req, err := http.NewRequest("POST", reqUrl, bytes.NewBuffer(reqBody))
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error creating req  ", err)
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error executing request", err)
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error decoding response body", err)
+		return "", err
+	}
+	snapshotId := string(body)
+	return snapshotId, nil
+}
+
+func (s *spotifyService) CreatePlaylist(accessToken string, userId string, name string, desc string) (*models.Playlist, error) {
+	var tag = "SPOTIFY_SERVICE_CREATE_PLAYLIST"
+	reqUrl := s.spotifyBaseWebApi + "/users/" + userId + "/playlists"
+	authHeader := "Bearer " + accessToken
+	payload := map[string]interface{}{
+		"name":        name,
+		"description": desc,
+		"public":      false,
+	}
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error marshalling req body  ", err)
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", reqUrl, bytes.NewBuffer(reqBody))
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error creating req  ", err)
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error executing request", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// error handling strat, check status code at this point, if not success
+	// return nill plus error object with descriptive message
+	//  // Check the response status code
+	//  if resp.StatusCode == http.StatusOK {
+	// 	fmt.Println("POST request was successful!")
+	// } else {
+	// 	fmt.Println("POST request failed with status code:", resp.StatusCode)
+	// }
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error decoding response body", err)
+		return nil, err
+	}
+
+	var playlist models.Playlist
+	err = json.Unmarshal(body, &playlist)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+		return nil, err
+	}
+
+	return &playlist, nil
+}
+
+func (s *spotifyService) GetUserTopItems(accessToken string, entityType string) (*responses.TopItemsResponse, error) {
+	var tag = "SPOTIFY_SERVICE_GET_USER_TOP_ITEMS"
+	requestBaseUrl := s.spotifyBaseWebApi + "/me/top/" + entityType
 	queryParams := url.Values{}
 	queryParams.Set("time_range", "short_term")
 	queryParams.Set("limit", "50")
@@ -170,6 +270,52 @@ func (s *spotifyService) GetUserTopTracks(accessToken string) (*responses.TopIte
 	}
 
 	return &topItems, nil
+}
+
+func (s *spotifyService) GetRecommendations(accessToken string, config models.RecommendationProfile) (*responses.RecommendationsResponse, error) {
+	var tag = "SPOTIFY_SERVICE_GET_RECOMMENDATIONS"
+	requestBaseUrl := s.spotifyBaseWebApi + "/recommendations"
+	queryParams := url.Values{}
+	queryParams.Set("seed_artists", strings.Join(config.SeedArtists, ","))
+	queryParams.Set("seed_tracks", strings.Join(config.SeedTracks, ","))
+	queryParams.Set("limit", strconv.FormatInt(int64(config.Limit), 10))
+	queryParams.Set("target_acousticness", strconv.FormatFloat(float64(config.Acousticness), 'f', -1, 32))
+	queryParams.Set("target_danceability", strconv.FormatFloat(float64(config.Danceability), 'f', -1, 32))
+	queryParams.Set("target_energy", strconv.FormatFloat(float64(config.Energy), 'f', -1, 32))
+	queryParams.Set("target_instrumentalness", strconv.FormatFloat(float64(config.Instrumentalness), 'f', -1, 32))
+	queryParams.Set("target_liveness", strconv.FormatFloat(float64(config.Liveness), 'f', -1, 32))
+	queryParams.Set("target_tempo", strconv.FormatFloat(float64(config.Tempo), 'f', -1, 32))
+	queryParams.Set("target_valence", strconv.FormatFloat(float64(config.Valence), 'f', -1, 32))
+	fullUrl := fmt.Sprintf("%s?%s", requestBaseUrl, queryParams.Encode())
+
+	authHeader := "Bearer " + accessToken
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", fullUrl, nil)
+
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error creating request", err)
+		return nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	resp, err := client.Do(req)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error executing request", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error decoding response body", err)
+		return nil, err
+	}
+	var recommendations responses.RecommendationsResponse
+	err = json.Unmarshal(body, &recommendations)
+	if err != nil {
+		util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+		return nil, err
+	}
+
+	return &recommendations, nil
 }
 
 func (s *spotifyService) GetTracksAudioFeatures(trackIds []string, accessToken string) (*responses.TracksAudioFeatures, error) {
