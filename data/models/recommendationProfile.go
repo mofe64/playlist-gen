@@ -17,5 +17,6 @@ type RecommendationProfile struct {
 	Liveness         float32            `json:"liveness"`
 	Popularity       int16              `json:"popularity"`
 	Valence          float32            `json:"valence"`
-	Tempo            float64            `json:"tempo"`
+	Tempo            float32            `json:"tempo"`
+	SnapshotId       string             `json:"snapshot_id"`
 }
