@@ -29,12 +29,18 @@ func RequireAuth() gin.HandlerFunc {
 			})
 			return
 		}
-		val, err := redis.Get(ctx, userId).Result()
-		if err != nil {
-			util.ErrorLog.Println(tag+": Could not retrive from redis", err.Error())
+		// update redis config creation to ping redis and panic not here
+		if err := redis.Ping(ctx).Err(); err != nil {
+			util.ErrorLog.Println(tag+": could not reach redis ...", err.Error())
 		} else {
-			c.Set("userDetails", val)
+			val, err := redis.Get(ctx, userId).Result()
+			if err != nil {
+				util.ErrorLog.Println(tag+": Could not retrive from redis", err.Error())
+			} else {
+				c.Set("userDetails", val)
+			}
 		}
+
 		c.Next()
 	}
 
