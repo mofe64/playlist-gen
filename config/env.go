@@ -41,7 +41,6 @@ func EnvMongoURI() string {
 	} else {
 		return os.Getenv("mongo_uri_dev")
 	}
-
 }
 
 func EnvDatabaseName() string {
