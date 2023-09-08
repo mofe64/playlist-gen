@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	"github.com/sethvargo/go-retry"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -27,6 +28,7 @@ var validate *validator.Validate = validator.New()
 var redis = config.RedisClient
 
 func GetAccessToken() gin.HandlerFunc {
+	tag := "AUTH_HANDLER_GET_ACCESS_TOKEN_CLIENT_CRED"
 	return func(c *gin.Context) {
 		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -34,57 +36,44 @@ func GetAccessToken() gin.HandlerFunc {
 		spotifyResponse, err := spotifyService.GetAccessTokenWithClientCredentials()
 
 		if err != nil {
-			util.ErrorLog.Println("Spotify get access token with client cred error ", err.Error())
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": "Internal Error, please try again"},
-					Success:   false,
-				},
-			)
-			return
+			if authError, ok := err.(util.ApplicationAuthError); ok {
+				util.ErrorLog.Println(tag+": Spotify get access token with client cred error ", authError)
+				util.GenerateBadRequestResponse(c, authError.Message)
+				return
+			} else {
+				util.ErrorLog.Println(tag+": Internal server error ", err.Error())
+				util.GenerateInternalServerErrorResponse(c, "Something went wrong please try again")
+				return
+			}
 		}
-
-		go func() {
-			applicationContext := util.GetApplicationContextInstance()
-			applicationContext.SetAccessToken(spotifyResponse.AccessToken)
-		}()
-
-		messageValue := "Fail"
-		if spotifyResponse.StatusCode == 200 {
-			messageValue = "Success"
-		}
-
-		c.JSON(spotifyResponse.StatusCode, responses.APIResponse{
-			Status:    spotifyResponse.StatusCode,
-			Message:   messageValue,
-			Timestamp: time.Now(),
-			Data: gin.H{
-				"auth": spotifyResponse,
-			},
-			Success: spotifyResponse.StatusCode == 200,
+		util.GenerateJSONResponse(c, http.StatusOK, "", gin.H{
+			"access_token": spotifyResponse.AccessToken,
+			"token_type":   spotifyResponse.TokenType,
+			"expires_in":   spotifyResponse.ExpiresIn,
 		})
-
 	}
 }
 
-func GetAuthorizationCode() gin.HandlerFunc {
+func prepareRedirectURI() string {
+	// Prepare the query parameters.
+	params := url.Values{}
+	params.Add("client_id", config.EnvSpotifyClientId())
+	params.Add("response_type", "code")
+	params.Add("redirect_uri", "http://localhost:5000/api/v1/auth/auth_code_callback")
+	params.Add("state", generateRandomString(16))
+	params.Add("scope", "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-top-read user-read-recently-played user-library-modify user-library-read user-read-private user-read-email")
+	baseUrl := spotifyBaseAuthUrl + "/authorize"
+	redirectURL := baseUrl + "?" + params.Encode()
+	return redirectURL
+
+}
+
+func PrepareAuthCodeURI() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		// Prepare the query parameters.
-		params := url.Values{}
-		params.Add("client_id", config.EnvSpotifyClientId())
-		params.Add("response_type", "code")
-		params.Add("redirect_uri", "http://localhost:5000/api/v1/auth/auth_code_callback")
-		params.Add("state", generateRandomString(16))
-		params.Add("scope", "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-top-read user-read-recently-played user-library-modify user-library-read user-read-private user-read-email")
-		baseUrl := spotifyBaseAuthUrl + "/authorize"
-		redirectURL := baseUrl + "?" + params.Encode()
-		// c.Redirect(http.StatusFound, redirectURL)
+		redirectURL := prepareRedirectURI()
+
 		c.JSON(http.StatusOK, responses.APIResponse{
 			Status:    http.StatusOK,
 			Message:   "Success",
@@ -100,29 +89,23 @@ func GetAuthorizationCode() gin.HandlerFunc {
 func AuthorizationCodeCallBack() gin.HandlerFunc {
 	tag := "AUTHORIZATION_CODE_CALLBACK"
 	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		// extract and log our query parameters
 		code := c.Query("code")
 		state := c.Query("state")
-		error := c.Query("error")
+		errorMsg := c.Query("error")
 		util.InfoLog.Println(tag+": code -> ", code)
 		util.InfoLog.Println(tag+": state -> ", state)
-		util.ErrorLog.Println(tag+": error -> ", error)
+		util.ErrorLog.Println(tag+": error -> ", errorMsg)
 
 		/**
 			If our callback is triggered with an error query param,
 			this means our spotify authentcation was not successful.
 			We return an unauthorized response
 		**/
-		if len(error) != 0 {
-			c.JSON(http.StatusUnauthorized, responses.APIResponse{
-				Status:    http.StatusUnauthorized,
-				Message:   error,
-				Timestamp: time.Now(),
-				Data:      gin.H{},
-				Success:   false,
-			})
+		if len(errorMsg) != 0 {
+			util.GenerateBadRequestResponse(c, errorMsg)
 			return
 		}
 
@@ -135,18 +118,15 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 
 		// return status 500 and log error, if access token operation returns an error
 		if err != nil {
-			util.ErrorLog.Println(tag+": Spotify get auth code error", err.Error())
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": "Internal Error, please try again"},
-					Success:   false,
-				},
-			)
-			return
+			if authError, ok := err.(util.ApplicationAuthError); ok {
+				util.ErrorLog.Println(tag+": Spotify get auth code error", err.Error())
+				util.GenerateBadRequestResponse(c, authError.Message)
+				return
+			} else {
+				util.ErrorLog.Println(tag+": Internal server error", err.Error())
+				util.GenerateInternalServerErrorResponse(c, "Something went wrong, please try again")
+				return
+			}
 		}
 
 		/**
@@ -154,10 +134,48 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		**/
 		userProfile, err := spotifyService.GetUserProfile(resp.AccessToken)
 
+		if err != nil {
+			if authError, ok := err.(util.ApplicationAuthError); ok {
+				util.ErrorLog.Println(tag+": authentication error ", authError.Message)
+				// ask client to retry authorization
+				redirectURL := prepareRedirectURI()
+				util.GenerateJSONResponse(c, http.StatusTeapot, "Re-authorization required", gin.H{
+					"url": redirectURL,
+				})
+				return
+			}
+			if rateLimitError, ok := err.(util.ApplicationRateLimitError); ok {
+				util.ErrorLog.Println(tag+": Rate limit error ", rateLimitError.Message)
+				// retry and back off strat.
+				backOff := retry.NewFibonacci(3 * time.Second)
+				backOff = retry.WithMaxRetries(3, backOff)
+
+				if err := retry.Do(ctx, backOff, func(_ context.Context) error {
+					userProfile, err = spotifyService.GetUserProfile(resp.AccessToken)
+					if err != nil {
+						if rateLimitError, ok := err.(util.ApplicationRateLimitError); ok {
+							return retry.RetryableError(rateLimitError)
+						} else {
+							util.GenerateInternalServerErrorResponse(c, "Something went wrong please try again")
+							return nil
+						}
+					}
+					return nil
+				}); err != nil {
+					util.GenerateInternalServerErrorResponse(c, "Something went wrong please try again")
+				}
+				return
+			}
+			if applicationError, ok := err.(util.ApplicationError); ok {
+				util.ErrorLog.Println(tag+": Internal server error ", applicationError.Message)
+				util.GenerateInternalServerErrorResponse(c, "Something went wrong please try again")
+				return
+			}
+		}
+
 		util.InfoLog.Println(tag+": user profile ", userProfile)
 
 		var user models.User
-
 		/**
 			Create a new Session struct called spotify auth which will hold our
 			spotify authentication details
@@ -172,7 +190,7 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		}
 
 		/**
-			Check if the retirieved profile exists in our database
+			Check if the retrieved profile exists in our database
 			If the user does not exist, create a new entry in database for user
 			If the user exists, update user's authentication field to reflect newly
 			obtained access and refresh tokens
@@ -194,16 +212,7 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			_, err := userCollection.InsertOne(ctx, newUser)
 			if err != nil {
 				util.ErrorLog.Println(tag+": DB Insertion err", err.Error())
-				c.JSON(
-					http.StatusInternalServerError,
-					responses.APIResponse{
-						Status:    http.StatusInternalServerError,
-						Message:   "Something went wrong",
-						Timestamp: time.Now(),
-						Data:      gin.H{"error": "Internal Error, please try again"},
-						Success:   false,
-					},
-				)
+				util.GenerateInternalServerErrorResponse(c, "Something went wrong, please try again")
 				return
 			}
 			user = newUser
@@ -216,25 +225,11 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 			_, err := userCollection.UpdateOne(ctx, filter, update)
 			if err != nil {
 				util.ErrorLog.Println(tag+": DB Update err", err.Error())
-				c.JSON(
-					http.StatusInternalServerError,
-					responses.APIResponse{
-						Status:    http.StatusInternalServerError,
-						Message:   "Something went wrong",
-						Timestamp: time.Now(),
-						Data:      gin.H{"error": "Internal Error, please try again"},
-						Success:   false,
-					},
-				)
+				util.GenerateInternalServerErrorResponse(c, "Something went wrong, please try again")
 				return
 			}
 
 		}
-		messageValue := "Fail"
-		if resp.StatusCode == 200 {
-			messageValue = "Success"
-		}
-
 		/**
 			To avoid having to go to the db everytime to retrieve user's auth details,
 			we are going to store the auth details in redis, mapped to the user's id
@@ -247,16 +242,7 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		// if there was an error converting auth details to json format return 500 error res
 		if err != nil {
 			util.ErrorLog.Println(tag+": Could not convert spotify token details to json", err.Error())
-			c.JSON(
-				http.StatusInternalServerError,
-				responses.APIResponse{
-					Status:    http.StatusInternalServerError,
-					Message:   "Something went wrong",
-					Timestamp: time.Now(),
-					Data:      gin.H{"error": "Internal Error, please try again"},
-					Success:   false,
-				},
-			)
+			util.GenerateInternalServerErrorResponse(c, "Something went wrong, please try again")
 			return
 		}
 		// store spotify auth details in redis kv
@@ -265,17 +251,11 @@ func AuthorizationCodeCallBack() gin.HandlerFunc {
 		redis.Set(ctx, user.Id, string(jsonValue), 0)
 
 		// return success response to user
-		c.JSON(http.StatusOK, responses.APIResponse{
-			Status:    http.StatusOK,
-			Message:   messageValue,
-			Timestamp: time.Now(),
-			Data: gin.H{
-				"access_token": resp.AccessToken,
-				"token_type":   resp.TokenType,
-				"expires_in":   resp.ExpiresIn,
-				"userId":       user.Id,
-			},
-			Success: resp.StatusCode == 200,
+		util.GenerateJSONResponse(c, http.StatusOK, "Success", gin.H{
+			"access_token": resp.AccessToken,
+			"token_type":   resp.TokenType,
+			"expires_in":   resp.ExpiresIn,
+			"userId":       user.Id,
 		})
 	}
 }
