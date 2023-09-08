@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-playground/validator/v10"
 	"github.com/sethvargo/go-retry"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -24,7 +23,6 @@ var spotifyBaseAuthUrl = "https://accounts.spotify.com"
 var spotifyRedirectUri = "http://localhost:5000/api/v1/auth/auth_code_callback"
 var spotifyService service.SpotifyService = service.NewSpotifyService(spotifyRedirectUri)
 var userCollection = config.GetCollection(config.DATABASE, "users")
-var validate *validator.Validate = validator.New()
 var redis = config.RedisClient
 
 func GetAccessToken() gin.HandlerFunc {
