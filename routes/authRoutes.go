@@ -10,7 +10,7 @@ func AuthorizationRoute(router *gin.Engine) {
 	authorizationRoutes := router.Group("api/v1/auth")
 	{
 		authorizationRoutes.GET("/client_cred", handlers.GetAccessToken())
-		authorizationRoutes.GET("/auth_code", handlers.GetAuthorizationCode())
+		authorizationRoutes.GET("/auth_code", handlers.PrepareAuthCodeURI())
 		authorizationRoutes.GET("/auth_code_callback", handlers.AuthorizationCodeCallBack())
 	}
 }
