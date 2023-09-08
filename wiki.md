@@ -7,6 +7,7 @@
 5. https://medium.com/@MTrax/golang-the-ultimate-guide-to-dependency-injection-4556b97f9cbd
 6. https://redis.io/docs/getting-started/installation/install-redis-on-windows/
 7. https://stackoverflow.com/questions/68166558/generic-structs-with-go
+8. https://stackoverflow.com/questions/73254949/golang-redis-client-connection-status
 
 start redis server on windows (wsl)
 `sudo service redis-server start`
