@@ -43,6 +43,7 @@ func NewSpotifyService(redirectUri string) SpotifyService {
 }
 
 func (s *spotifyService) GetAccessTokenWithClientCredentials() (*responses.AccessTokenResponse, error) {
+	tag := "SPOTIFY_SERVICE_GET_ACCESS_TOKEN_CLIENT_CRED"
 	/**
 		Since we are sending formData to the spotify api as application/x-www-form-urlencoded format, we use
 		formData := url.Values{} to create an empty url.Values struct.
@@ -79,7 +80,7 @@ func (s *spotifyService) GetAccessTokenWithClientCredentials() (*responses.Acces
 	url := s.spotifyBaseAuthUrl + "/api/token"
 	req, err := http.NewRequest("POST", url, payload)
 	if err != nil {
-		util.ErrorLog.Println("Error creating request", err)
+		util.ErrorLog.Println(tag+": Error creating request", err)
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -87,28 +88,43 @@ func (s *spotifyService) GetAccessTokenWithClientCredentials() (*responses.Acces
 
 	resp, err := client.Do(req)
 	if err != nil {
-		util.ErrorLog.Println("Error executing request", err)
+		util.ErrorLog.Println(tag+": Error executing request", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		util.ErrorLog.Println("Error decoding response body", err)
+		util.ErrorLog.Println(tag+": Error decoding response body", err)
 		return nil, err
+	}
+
+	if resp.StatusCode == 400 {
+		var spotifyErrorRes responses.SpotifyAuthErrorReponse
+		err = json.Unmarshal(body, &spotifyErrorRes)
+		if err != nil {
+			util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+			return nil, err
+		}
+		var authError = util.ApplicationAuthError{
+			Message: spotifyErrorRes.ErrorDescription,
+		}
+		return nil, authError
 	}
 
 	var accessTokenResponse responses.AccessTokenResponse
 	err = json.Unmarshal(body, &accessTokenResponse)
 	if err != nil {
-		util.ErrorLog.Println("Error unmarshalling res body ", err)
+		util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
 		return nil, err
 	}
-	accessTokenResponse.StatusCode = resp.StatusCode
 	return &accessTokenResponse, nil
 
 }
 
 func (s *spotifyService) GetUserProfile(accesstoken string) (*responses.SpotifyUserProfile, error) {
+	tag := "SPOTIFY_SERVICE_GET_USER_PROFILE"
+
 	url := s.spotifyBaseWebApi + "/me"
 	authHeader := "Bearer " + accesstoken
 	client := &http.Client{}
@@ -129,6 +145,47 @@ func (s *spotifyService) GetUserProfile(accesstoken string) (*responses.SpotifyU
 		util.ErrorLog.Println("Error decoding response body", err)
 		return nil, err
 	}
+
+	if resp.StatusCode == 401 {
+		var operationErr responses.SpotifyOperationErrorResponse
+		err = json.Unmarshal(body, &operationErr)
+		if err != nil {
+			util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+			return nil, err
+		}
+		var authError = util.ApplicationAuthError{
+			Message: operationErr.Error.Message,
+		}
+		return nil, authError
+	}
+
+	if resp.StatusCode == 403 {
+		var operationErr responses.SpotifyOperationErrorResponse
+		err = json.Unmarshal(body, &operationErr)
+		if err != nil {
+			util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+			return nil, err
+		}
+		var applicationError = util.ApplicationError{
+			Message: operationErr.Error.Message,
+		}
+		return nil, applicationError
+
+	}
+
+	if resp.StatusCode == 429 {
+		var operationErr responses.SpotifyOperationErrorResponse
+		err = json.Unmarshal(body, &operationErr)
+		if err != nil {
+			util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+			return nil, err
+		}
+		var rateLimitError = util.ApplicationRateLimitError{
+			Message: operationErr.Error.Message,
+		}
+		return nil, rateLimitError
+	}
+
 	var userProfile responses.SpotifyUserProfile
 	err = json.Unmarshal(body, &userProfile)
 	if err != nil {
@@ -363,6 +420,7 @@ func (s *spotifyService) GetTracksAudioFeatures(trackIds []string, accessToken s
 }
 
 func (s *spotifyService) GetAccessTokenWithAuthCode(authCode string) (*responses.AccessTokenResponse, error) {
+	tag := "SPOTIFY_SERVICE_GET_ACCESS_TOKEN_WITH_AUTH_CODE"
 
 	formData := url.Values{}
 	formData.Set("grant_type", "authorization_code")
@@ -399,12 +457,25 @@ func (s *spotifyService) GetAccessTokenWithAuthCode(authCode string) (*responses
 		util.ErrorLog.Println("Error decoding response body", err)
 		return nil, err
 	}
+
+	if resp.StatusCode == 400 {
+		var spotifyErrorRes responses.SpotifyAuthErrorReponse
+		err = json.Unmarshal(body, &spotifyErrorRes)
+		if err != nil {
+			util.ErrorLog.Println(tag+": Error unmarshalling res body ", err)
+			return nil, err
+		}
+		var authError = util.ApplicationAuthError{
+			Message: spotifyErrorRes.ErrorDescription,
+		}
+		return nil, authError
+	}
+
 	var accessTokenResponse responses.AccessTokenResponse
 	err = json.Unmarshal(body, &accessTokenResponse)
 	if err != nil {
 		util.ErrorLog.Println("Error unmarshalling res body ", err)
 		return nil, err
 	}
-	accessTokenResponse.StatusCode = resp.StatusCode
 	return &accessTokenResponse, nil
 }
